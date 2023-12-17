@@ -85,7 +85,7 @@ Then as root, check what `pids` belong to the uaer session and add them to the u
 # echo 5311 > /sys/fs/cgroup/user/forza/main/cgroup.procs
 ```
 Now, the user's screen session is in the `main` cgroup and the user can create additional cgroups and move processes started from within this session to that cgroup.
-```
+
 ## Helper utility
 The `user_cgroup` helper utility can automate the process of setting of user cgroups.
 
