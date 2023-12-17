@@ -1,0 +1,13 @@
+# user_cgroups configuration file
+
+# Enable a cgroup for these users.
+users="user1 user2"
+
+# Enable controllers tgat users can use
+#controllers="+cpu +memory +io"
+
+# Limit number of child cgroups that a user can create
+#max_decendants=10
+
+# Mount path for cgroup2
+#cgroup_path="/sys/fs/cgroup"

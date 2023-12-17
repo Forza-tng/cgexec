@@ -1,0 +1,199 @@
+#!/bin/bash
+
+# shellcheck shell=bash
+
+# cgexec - execute a command in a cgroup
+# version 2023-12-16.0
+#
+# Requires Linux Control Groups version v2 (unified)
+# https://www.kernel.org/doc/Documentation/cgroup-v2.txt
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2023 Forza <forza@tnonline.net>
+
+# Declare variables
+declare -i -r self=$$
+declare -i cpu=0
+declare -i cpu_max=100
+declare -i io=1
+declare -i errorlevel=0
+declare -i cg_keep=0
+declare -i wait=10
+declare mem_high="max"
+declare mem_max="max"
+declare cg=""
+declare cgcmd=""
+declare group=""
+declare -r cgmnt="$(findmnt --noheadings --output TARGET -t cgroup2)"
+
+# Set base to the cgroup v2 mount point
+if [ "$USER" != "root" ] && [ -d "${cgmnt}/user/${USER}" ]; then
+	declare base="${cgmnt}/user/${USER}"
+else
+	declare base="${cgmnt}"
+fi
+
+help_text(){
+cat << END
+
+Attaches a program <cmd> to a cgroup with defined limits.
+Requires Linux Control Groups v2.
+
+Usage: cgexec [options] <cmd> [cmd args]
+Options:
+ -c cpu.weight   (0-10000)  Set CPU priority
+ -C cpu.max      (1-100)    Set max CPU time in percent
+ -i io.weight    (1-10000)  Set I/O weight
+ -m memory.high  (0-max)    Set soft memory limit
+ -M memory.max   (0-max)    Set hard memory limit
+ -g group        Create or attach to existing cgroup. Default is to use an ephemeral group
+ -b path         Use <path> as cgroup root
+END
+}
+
+cleanup(){
+	# Clean up and remove the cgroup
+	if [ $cg_keep -eq 1 ]; then
+		echo "* Not removing existing cgroup"
+		exit $errorlevel
+	fi
+
+	# Move the script to the base cgroup
+	echo -e "\n* Cleaning up cgroup ${cg}"
+	
+	if [ "$USER" != "root" ]; then
+		if [ -w "${base}/main/cgroup.procs" ]; then
+			echo $self > "${base}/main/cgroup.procs"
+		fi
+	else
+		if [ -w "${base}/cgroup.procs" ]; then
+			echo -e "\n* Cleaning up cgroup ${cg}"
+			echo $self > "${base}/cgroup.procs"
+		fi
+	fi
+	
+	# Attempt to remove the cgroup
+	while [ $wait -gt 0 ]; do
+		rmdir "${cg}" >/dev/null 2>&1
+		if [ ! -d "${cg}" ]; then
+			break
+		else
+			echo -n "."
+			sleep 1
+			((wait--))
+		fi
+	done
+	if [ $wait -eq 0 ]; then
+		echo "* Command exited but ${cg}/cgroup.procs is not empty"
+		echo "* Not removing ${cg}"
+	fi
+	exit $errorlevel
+}
+
+# Check arguments
+if [ $# -eq 0 ]; then
+	help_text
+	exit 1
+fi
+
+while getopts 'c:C:i:m:M:g:b:h' OPT; do
+	case "$OPT" in
+    i)
+			io="$OPTARG"
+			echo "* I/O weight = $OPTARG"
+			;;
+		c)
+			cpu="$OPTARG"
+			echo "* CPU weight = $OPTARG"
+			;;
+		C)
+			cpu_max="$OPTARG"
+			echo "* CPU max = $OPTARG %"
+			;;
+		m)
+			mem_high="$OPTARG"
+			echo "* Memory High = $OPTARG"
+			;;
+		M)
+			mem_max="$OPTARG"
+			echo "* Memory Max = $OPTARG"
+			;;
+		g)
+			group="$OPTARG"
+			;;
+		b)
+			base="$OPTARG"
+			echo "* Base = $OPTARG"
+			;;
+		h)
+			help_text
+			exit 0
+			;;
+		*)
+			help_text
+			exit 1
+			;;
+	esac
+done
+shift $(( OPTIND - 1 ))
+cgcmd="${1}"
+shift
+
+# Check if cgcmd is a valid executable
+if ! command -v "${cgcmd}" &> /dev/null; then
+    echo "Error: '${cgcmd}' is not a valid executable."
+    exit 1
+fi
+
+# Check for existing cgroup
+if [ -n "${group}" ]; then
+	cg="${base}/${group}"
+	if [ ! -d "${cg}" ]; then
+		if [ ! -w "$(dirname "${cg}")" ]; then
+			echo "Error: You don't have write access to $(dirname "${cg}")."
+			echo "Cannot create ${cg}"
+			exit 1
+		fi
+		mkdir "${cg}"
+	else
+		echo "* Using existing cgroup: ${cg}"
+		cg_keep=1
+		if [ ! -w "${cg}/cgroup.procs" ]; then
+			echo "Error: You don't have write access to ${cg}."
+			exit 1
+		fi
+	fi
+	echo $self > "${cg}/cgroup.procs"
+else
+	# Create a temporary cgroup
+	cg="$(mktemp -d -p "${base}" cmd-XXXX)"
+	echo "* Creating cgroup: ${cg}"
+	echo $self > "${cg}/cgroup.procs"
+fi
+
+# Set cgroup limits
+test -w "${cg}/io.weight" && echo $io > "${cg}/io.weight"
+test -w "${cg}/io.bfq.weight" && echo $io > "${cg}/io.bfq.weight"
+test -w "${cg}/memory.high"	&& echo "${mem_high}" > "${cg}/memory.high"
+test -w "${cg}/memory.max" && echo "${mem_max}" > "${cg}/memory.max"
+
+if [ $cpu -eq 0 ] && [ -w "${cg}/cpu.idle" ]; then
+	echo 1 > "${cg}/cpu.idle"
+else
+	test -w "${cg}/cpu.weight" && echo $cpu > "${cg}/cpu.weight"
+fi
+
+if [ $cpu_max -gt 0 ] && [ $cpu_max -lt 100 ] && [ -w "${cg}/cpu.max" ]; then
+	echo "$((cpu_max * 1000)) 100000" > "${cg}/cpu.max"
+fi
+
+# Execute command
+echo -e "* Executing: ${cgcmd} ${*} \n"
+"${cgcmd}" "${@}"
+errorlevel=$?
+if [ $errorlevel -ne 0 ]; then
+		echo -e "\nWARNING: ${cgcmd} exited with return code $errorlevel"
+fi
+
+# Cleanup before exiting
+cleanup

@@ -1,0 +1,61 @@
+#!/sbin/openrc-run
+
+# OpenRC init script for setting up cgroups for specified users
+# Requires Linux Control Groups version v2 (unified)
+# https://www.kernel.org/doc/Documentation/cgroup-v2.txt
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2023 Forza <forza@tnonline.net>
+
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+name="${RC_SVCNAME}"
+description="User cgroups"
+: "${controllers:="+cpu +memory +io"}"
+: "${max_decendants:=10}"
+: "${users:=""}" 
+: "${cgroup_path:="$(findmnt --noheadings --output TARGET -t cgroup2)"}"
+base_path="${cgroup_path}/user"
+	
+depend() {
+	need cgroups
+}
+
+start() {
+	ebegin "Starting user cgroups"
+
+	if [ -z "${cgroup_path}" ]; then
+		eerror "cgroup2 is not mounted."
+		return 1
+	fi
+	
+	# Create base user cgrouo container
+	checkpath -d -m 0775 -o root:root "${base_path}"
+	
+	# Enable cgroup controllers
+	echo "${controllers}" > "${base_path}/cgroup.subtree_control"
+	
+	# Set up user cgroups
+	for user in ${users}; do
+		if ! id "${user}" > /dev/null 2>&1; then
+			eerror "User '${user}' does not exist. Skipping cgroup setup for this user."
+			continue
+		fi
+		if [ ! -d "${base_path}/${user}" ]; then
+			checkpath -d -m 0775 -o "${user}":"${user}" "${base_path}/${user}"
+			chown -R "${user}":"${user}" "${base_path}/${user}"
+			#find "${base_path}/${user}" -type f -exec chmod 664 {} +
+		fi
+		echo "$max_decendants" > "${base_path}/cgroup.max.descendants"
+		echo "${controllers}" > "${base_path}/${user}/cgroup.subtree_control"
+	done
+	einfo "User cgroups are mounted at ${base_path}/<username>"
+	eend
+}
+
+status() {
+	einfo "User cgroups are mounted at ${base_path}/<username>"
+	einfo "The following users' cgroups are enabled:"
+	find "${base_path}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+}

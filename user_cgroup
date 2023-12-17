@@ -1,0 +1,13 @@
+#!/bin/sh
+[ "root" != "$USER" ] && exec env -i  sudo $0 $PPID "$(id -un)"
+declare -r user_id=$1
+declare -r user_name=$2
+cgroup="/sys/fs/cgroup/user/${user_name}/main"
+
+[ "$user_name" = "root" ] && exit 0
+
+if [ -w "${cgroup}" ]; then
+	echo "cgroup: ${cgroup}"
+	echo "${user_id}" > "${cgroup}/cgroup.procs"
+fi
+exit 0
